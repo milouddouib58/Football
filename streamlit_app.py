@@ -80,7 +80,7 @@ def import_fd():
 # شريط علوي بسيط مع اختيار المظهر
 c_top_l, c_top_r = st.columns([3,1])
 with c_top_l:
-    st.markdown("<div class='hero'><h1>  "Best Odds,⚽ Best Vision"  </h1></div>", unsafe_allow_html=True)
+    st.markdown("<div class='hero'><h1>Best Odds,Best Vision  ⚽</h1></div>", unsafe_allow_html=True)
 with c_top_r:
     theme = st.selectbox("المظهر", ["فاتح","داكن"], index=(0 if st.session_state.ui_theme=="فاتح" else 1))
     if theme != st.session_state.ui_theme:
@@ -302,5 +302,6 @@ if submitted:
           });
         </script>
         """ % b64, height=60)
+
 
 
