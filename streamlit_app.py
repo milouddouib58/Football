@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import os, sys, json, importlib
 import streamlit as st
+import base64
+import streamlit.components.v1 as components
 
 # حمّل المفتاح من Secrets أولاً إن وُجد (آمن، لا يُعرض)
 if "FOOTBALL_DATA_API_KEY" in st.secrets and st.secrets["FOOTBALL_DATA_API_KEY"]:
@@ -78,7 +80,7 @@ def import_fd():
 # شريط علوي بسيط مع اختيار المظهر
 c_top_l, c_top_r = st.columns([3,1])
 with c_top_l:
-    st.markdown("<div class='hero'><h1>توقّع مباريات كرة القدم  ⚽</h1></div>", unsafe_allow_html=True)
+    st.markdown("<div class='hero'><h1>توقّع مباريات كرة القدم — واجهة واضحة ومميّزة ⚽</h1></div>", unsafe_allow_html=True)
 with c_top_r:
     theme = st.selectbox("المظهر", ["فاتح","داكن"], index=(0 if st.session_state.ui_theme=="فاتح" else 1))
     if theme != st.session_state.ui_theme:
@@ -104,11 +106,11 @@ with st.expander("إعداد مفتاح API (Football-Data.org)", expanded=True)
 with st.form("predict_form"):
     c1, c2 = st.columns(2)
     with c1:
-        team1 = st.text_input("الفريق 1 (قد يكون صاحب الأرض)", "")
+        team1 = st.text_input("الفريق 1 (قد يكون صاحب الأرض)", "Real Sociedad")
         team1_home = st.checkbox("هل الفريق 1 صاحب الأرض؟", value=True)
         comp_code = st.selectbox("كود المسابقة (اختياري)", options=["","CL","PD","PL","SA","BL1","FL1","DED","PPL","BSA","ELC"], index=2)
     with c2:
-        team2 = st.text_input("الفريق 2", "")
+        team2 = st.text_input("الفريق 2", "Real Madrid")
         max_goals = st.text_input("حجم شبكة الأهداف (فارغ = ديناميكي)", value="")
 
     with st.expander("خيارات عرض البيانات الإضافية"):
@@ -252,5 +254,51 @@ if submitted:
         st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("الإخراج الكامل (JSON)"):
-        st.json(res)
+    # عرض الشجرة الافتراضي
+    st.json(res)
 
+    # نص JSON جاهز للنسخ/التنزيل
+    try:
+        json_str = json.dumps(res, ensure_ascii=False, indent=2)
+    except Exception:
+        json_str = json.dumps(res, default=str, ensure_ascii=False, indent=2)
+
+    # زر تنزيل الملف
+    st.download_button(
+        "⬇️ تنزيل JSON",
+        data=json_str,
+        file_name="prediction.json",
+        mime="application/json",
+        key="dl_json",
+    )
+
+    # زر نسخ إلى الحافظة — باستخدام components.html
+    b64 = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
+    components.html("""
+    <div style="margin-top:8px;">
+      <button id="copy-json"
+              style="cursor:pointer; padding:10px 14px; border-radius:10px; border:0;
+                     background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; font-weight:600;">
+        📋 نسخ JSON
+      </button>
+    </div>
+    <script>
+      const data = atob('%s');
+      const btn = document.getElementById('copy-json');
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(data);
+          btn.textContent = '✔ تم النسخ';
+        } catch (e) {
+          const ta = document.createElement('textarea');
+          ta.value = data;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          btn.textContent = '✔ تم النسخ';
+        }
+        setTimeout(() => btn.textContent = '📋 نسخ JSON', 1600);
+      });
+    </script>
+    """ % b64, height=60)
