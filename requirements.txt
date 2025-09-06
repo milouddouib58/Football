@@ -1,3 +1,5 @@
-streamlit==1.36.
-0requests==2.32.
-3urllib3==2.2.2
+
+3urllib
+streamlit
+requests
+google-generativeai
