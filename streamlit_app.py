@@ -254,51 +254,51 @@ if submitted:
         st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("الإخراج الكامل (JSON)"):
-    # عرض الشجرة الافتراضي
-    st.json(res)
+        # عرض الشجرة الافتراضي
+        st.json(res)
 
-    # نص JSON جاهز للنسخ/التنزيل
-    try:
-        json_str = json.dumps(res, ensure_ascii=False, indent=2)
-    except Exception:
-        json_str = json.dumps(res, default=str, ensure_ascii=False, indent=2)
+        # نص JSON جاهز للنسخ/التنزيل
+        try:
+            json_str = json.dumps(res, ensure_ascii=False, indent=2)
+        except Exception:
+            json_str = json.dumps(res, default=str, ensure_ascii=False, indent=2)
 
-    # زر تنزيل الملف
-    st.download_button(
-        "⬇️ تنزيل JSON",
-        data=json_str,
-        file_name="prediction.json",
-        mime="application/json",
-        key="dl_json",
-    )
+        # زر تنزيل الملف
+        st.download_button(
+            "⬇️ تنزيل JSON",
+            data=json_str,
+            file_name="prediction.json",
+            mime="application/json",
+            key="dl_json",
+        )
 
-    # زر نسخ إلى الحافظة — باستخدام components.html
-    b64 = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
-    components.html("""
-    <div style="margin-top:8px;">
-      <button id="copy-json"
-              style="cursor:pointer; padding:10px 14px; border-radius:10px; border:0;
-                     background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; font-weight:600;">
-        📋 نسخ JSON
-      </button>
-    </div>
-    <script>
-      const data = atob('%s');
-      const btn = document.getElementById('copy-json');
-      btn.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(data);
-          btn.textContent = '✔ تم النسخ';
-        } catch (e) {
-          const ta = document.createElement('textarea');
-          ta.value = data;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand('copy');
-          document.body.removeChild(ta);
-          btn.textContent = '✔ تم النسخ';
-        }
-        setTimeout(() => btn.textContent = '📋 نسخ JSON', 1600);
-      });
-    </script>
-    """ % b64, height=60)
+        # زر نسخ إلى الحافظة — باستخدام components.html
+        b64 = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
+        components.html("""
+        <div style="margin-top:8px;">
+          <button id="copy-json"
+                  style="cursor:pointer; padding:10px 14px; border-radius:10px; border:0;
+                         background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; font-weight:600;">
+            📋 نسخ JSON
+          </button>
+        </div>
+        <script>
+          const data = atob('%s');
+          const btn = document.getElementById('copy-json');
+          btn.addEventListener('click', async () => {
+            try {
+              await navigator.clipboard.writeText(data);
+              btn.textContent = '✔ تم النسخ';
+            } catch (e) {
+              const ta = document.createElement('textarea');
+              ta.value = data;
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+              btn.textContent = '✔ تم النسخ';
+            }
+            setTimeout(() => btn.textContent = '📋 نسخ JSON', 1600);
+          });
+        </script>
+        """ % b64, height=60)
