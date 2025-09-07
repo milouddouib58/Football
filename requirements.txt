@@ -1,3 +1,5 @@
 streamlit
 requests
-urllib3
+urllib3 
+requests
+
