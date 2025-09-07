@@ -3,6 +3,8 @@ import os, sys, json, importlib
 import streamlit as st
 import base64
 import streamlit.components.v1 as components
+from datetime import datetime, timedelta
+import requests
 
 # حمّل المفتاح من Secrets أولاً إن وُجد (آمن، لا يُعرض)
 if "FOOTBALL_DATA_API_KEY" in st.secrets and st.secrets["FOOTBALL_DATA_API_KEY"]:
@@ -12,9 +14,13 @@ if "FD_MIN_INTERVAL_SEC" in st.secrets and st.secrets["FD_MIN_INTERVAL_SEC"]:
 
 st.set_page_config(page_title="FD Predictor — Mobile", page_icon="⚽", layout="wide")
 
-# حالة المظهر (افتراضياً: فاتح)
+# حالة المظهر (افتراضياً: فاتح) + مفاتيح افتراضية للملء التلقائي
 if "ui_theme" not in st.session_state:
     st.session_state.ui_theme = "فاتح"
+st.session_state.setdefault("team1", "")
+st.session_state.setdefault("team2", "")
+st.session_state.setdefault("team1_home", True)
+st.session_state.setdefault("comp_code", "PL")  # افتراضياً PL
 
 def inject_css(theme="فاتح"):
     if theme == "فاتح":
@@ -102,16 +108,185 @@ with st.expander("إعداد مفتاح API (Football-Data.org)", expanded=True)
                 st.warning("لم يتم إدخال مفتاح.")
     st.caption("تلميح: على Streamlit Cloud استخدم Settings → Secrets لحفظ المفتاح بأمان. لا تضعه في الكود أو الريبو.")
 
+# -------------------------------------------------------------------
+# اختيار من البطولات والمباريات (جلب من API وتعبئة تلقائية)
+# -------------------------------------------------------------------
+
+# خريطة البطولات لعرض أسماء ودّية
+COMP_MAP = {
+    "PL":  "الدوري الإنجليزي الممتاز — PL",
+    "PD":  "الدوري الإسباني — LaLiga — PD",
+    "SA":  "الدوري الإيطالي — Serie A — SA",
+    "BL1": "الدوري الألماني — Bundesliga — BL1",
+    "FL1": "الدوري الفرنسي — Ligue 1 — FL1",
+    "CL":  "دوري أبطال أوروبا — CL",
+    "DED": "الدوري الهولندي — Eredivisie — DED",
+    "PPL": "الدوري البرتغالي — PPL",
+    "BSA": "الدوري البرازيلي — BSA",
+    "ELC": "التشامبيونشيب — ELC",
+}
+
+def _fmt_local(utc_iso: str) -> str:
+    try:
+        # تحويل وقت UTC إلى التوقيت المحلي
+        local_tz = datetime.now().astimezone().tzinfo
+        dt = datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).astimezone(local_tz)
+        return dt.strftime("%a %d %b %H:%M")
+    except Exception:
+        return utc_iso
+
+@st.cache_data(ttl=90)
+def fetch_matches_api(comp_code: str, date_from: datetime.date, date_to: datetime.date, status: str = "SCHEDULED"):
+    token = os.environ.get("FOOTBALL_DATA_API_KEY")
+    if not token:
+        raise RuntimeError("FOOTBALL_DATA_API_KEY غير مضبوط.")
+    base = "https://api.football-data.org/v4/matches"
+    params = {
+        "competitions": comp_code,
+        "dateFrom": date_from.strftime("%Y-%m-%d"),
+        "dateTo": date_to.strftime("%Y-%m-%d"),
+        "status": status  # SCHEDULED, TIMED, LIVE, IN_PLAY, FINISHED
+    }
+    headers = {"X-Auth-Token": token}
+    r = requests.get(base, headers=headers, params=params, timeout=20)
+    if r.status_code != 200:
+        try:
+            msg = r.json()
+        except Exception:
+            msg = r.text
+        raise RuntimeError(f"API {r.status_code}: {msg}")
+    data = r.json() or {}
+    matches = []
+    for m in data.get("matches", []):
+        matches.append({
+            "id": m.get("id"),
+            "utcDate": m.get("utcDate"),
+            "competition": (m.get("competition") or {}).get("code") or comp_code,
+            "matchday": m.get("matchday"),
+            "status": m.get("status"),
+            "home": (m.get("homeTeam") or {}).get("name"),
+            "away": (m.get("awayTeam") or {}).get("name"),
+        })
+    matches.sort(key=lambda x: (x.get("utcDate") or "", x.get("home") or ""))
+    return matches
+
+# واجهة اختيار البطولات والمباريات
+st.markdown("<div class='card'>", unsafe_allow_html=True)
+st.subheader("اختيار من البطولات والمباريات")
+
+colA, colB, colC = st.columns([1.6, 1.1, 1.0])
+
+# تحديد المؤشر الافتراضي لقائمة البطولات
+_comp_keys = list(COMP_MAP.keys())
+_default_comp_key = st.session_state.get("comp_select", st.session_state.comp_code)
+_default_index = _comp_keys.index(_default_comp_key) if _default_comp_key in _comp_keys else 0
+
+with colA:
+    comp_sel = st.selectbox(
+        "اختر البطولة",
+        options=_comp_keys,
+        format_func=lambda c: COMP_MAP.get(c, c),
+        index=_default_index,
+        key="comp_select",
+    )
+with colB:
+    status_sel = st.selectbox(
+        "الحالة",
+        options=["SCHEDULED", "TIMED", "LIVE", "IN_PLAY", "FINISHED"],
+        index=0,
+        key="status_select"
+    )
+with colC:
+    range_sel = st.selectbox(
+        "الفترة",
+        options=["اليوم", "3 أيام", "أسبوع", "شهر", "مخصص"],
+        index=2,
+        key="range_select"
+    )
+
+today = datetime.now().date()
+if st.session_state.range_select == "مخصص":
+    d1, d2 = st.columns(2)
+    with d1:
+        date_from = st.date_input("من", value=st.session_state.get("date_from", today), key="date_from")
+    with d2:
+        date_to = st.date_input("إلى", value=st.session_state.get("date_to", today + timedelta(days=7)), key="date_to")
+else:
+    if st.session_state.range_select == "اليوم":
+        date_from, date_to = today, today
+    elif st.session_state.range_select == "3 أيام":
+        date_from, date_to = today, today + timedelta(days=3)
+    elif st.session_state.range_select == "أسبوع":
+        date_from, date_to = today, today + timedelta(days=7)
+    else:  # "شهر"
+        date_from, date_to = today, today + timedelta(days=30)
+    st.session_state["date_from"] = date_from
+    st.session_state["date_to"] = date_to
+
+matches = []
+if os.getenv("FOOTBALL_DATA_API_KEY"):
+    try:
+        matches = fetch_matches_api(st.session_state.comp_select, date_from, date_to, st.session_state.status_select)
+    except Exception as e:
+        st.warning(f"تعذّر جلب المباريات: {e}")
+else:
+    st.info("اضبط مفتاح FOOTBALL_DATA_API_KEY لجلب المباريات تلقائيًا.")
+
+selected_match = None
+if matches:
+    labels = [
+        f"{_fmt_local(m['utcDate'])} — {m['home']} vs {m['away']}  (MD {m.get('matchday') or '-'})"
+        for m in matches
+    ]
+    idx = st.selectbox(
+        "اختر مباراة",
+        options=list(range(len(matches))),
+        format_func=lambda i: labels[i],
+        key="match_pick"
+    )
+    if isinstance(idx, int) and 0 <= idx < len(matches):
+        selected_match = matches[idx]
+        st.caption(f"الحالة: {selected_match['status']} · المسابقة: {selected_match['competition']} · Matchday: {selected_match.get('matchday') or '-'}")
+
+    c1, c2 = st.columns([1,1])
+    with c1:
+        lock_fields = st.checkbox("قفل الحقول بعد الاختيار", value=True, key="lock_match_fields")
+    with c2:
+        if st.button("استخدام هذه المباراة لتعبئة الحقول", type="primary"):
+            st.session_state["team1"] = selected_match["home"]
+            st.session_state["team2"] = selected_match["away"]
+            st.session_state["team1_home"] = True
+            st.session_state["comp_code"] = selected_match["competition"]
+            st.success(f"تم اختيار: {selected_match['home']} vs {selected_match['away']}")
+            try:
+                st.rerun()
+            except Exception:
+                st.experimental_rerun()
+else:
+    st.info("لا توجد مباريات ضمن النطاق المحدد.")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# -------------------------------------------------------------------
 # المدخلات
+# -------------------------------------------------------------------
 with st.form("predict_form"):
     c1, c2 = st.columns(2)
+
+    # تعطيل الحقول إذا تم اختيار مباراة وقُفلَت
+    disabled_fields = bool(st.session_state.get("lock_match_fields")) and bool(st.session_state.get("team1")) and bool(st.session_state.get("team2"))
+
     with c1:
-        team1 = st.text_input("الفريق 1 (قد يكون صاحب الأرض)", "")
-        team1_home = st.checkbox("هل الفريق 1 صاحب الأرض؟", value=True)
-        comp_code = st.selectbox("كود المسابقة (اختياري)", options=["","CL","PD","PL","SA","BL1","FL1","DED","PPL","BSA","ELC"], index=2)
+        team1 = st.text_input("الفريق 1 (قد يكون صاحب الأرض)", key="team1", disabled=disabled_fields)
+        team1_home = st.checkbox("هل الفريق 1 صاحب الأرض؟", key="team1_home", disabled=disabled_fields)
+        comp_code = st.selectbox(
+            "كود المسابقة (اختياري)",
+            options=["","CL","PD","PL","SA","BL1","FL1","DED","PPL","BSA","ELC"],
+            key="comp_code"  # سيتم ضبطه تلقائياً عند اختيار مباراة
+        )
     with c2:
-        team2 = st.text_input("الفريق 2", "")
-        max_goals = st.text_input("حجم شبكة الأهداف (فارغ = ديناميكي)", value="")
+        team2 = st.text_input("الفريق 2", key="team2", disabled=disabled_fields)
+        max_goals = st.text_input("حجم شبكة الأهداف (فارغ = ديناميكي)", key="max_goals")
 
     with st.expander("خيارات عرض البيانات الإضافية"):
         cc1, cc2, cc3, cc4 = st.columns(4)
@@ -133,7 +308,7 @@ with st.form("predict_form"):
 
 # بطاقة تعليمية إن لم يُنقر زر التوقع
 if not submitted:
-    st.markdown("<div class='card'>أدخل الفريقين واضغط “⚡ توقّع الآن”. أول تشغيل قد يستغرق بضع ثوانٍ لتفادي Rate Limit.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='card'>أدخل الفريقين أو اختر مباراة من البطولات أعلاه ثم اضغط “⚡ توقّع الآن”. أول تشغيل قد يستغرق بضع ثوانٍ لتفادي Rate Limit.</div>", unsafe_allow_html=True)
 
 # عند الضغط
 if submitted:
@@ -207,8 +382,10 @@ if submitted:
     colp1, colp2, colp3 = st.columns(3)
 
     def prob_block(label, val, kind):
-        try: val = float(val or 0.0)
-        except: val = 0.0
+        try:
+            val = float(val or 0.0)
+        except:
+            val = 0.0
         bar_html = f"""
         <div class='prob {kind}'>
           <div class='lbl'>{label} — <b>{val:.2f}%</b></div>
@@ -302,6 +479,3 @@ if submitted:
           });
         </script>
         """ % b64, height=60)
-
-
-
