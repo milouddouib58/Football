@@ -6,6 +6,12 @@ import streamlit.components.v1 as components
 from datetime import datetime, timedelta
 import requests
 
+# محاولة استيراد محرر ACE (اختياري). ثبّته عبر: pip install streamlit-ace
+try:
+    from streamlit_ace import st_ace
+except Exception:
+    st_ace = None
+
 # حمّل المفتاح من Secrets أولاً إن وُجد (آمن، لا يُعرض)
 if "FOOTBALL_DATA_API_KEY" in st.secrets and st.secrets["FOOTBALL_DATA_API_KEY"]:
     os.environ["FOOTBALL_DATA_API_KEY"] = st.secrets["FOOTBALL_DATA_API_KEY"]
@@ -77,8 +83,10 @@ def inject_css(theme="فاتح"):
 
 inject_css(st.session_state.ui_theme)
 
-# استيراد fd_predictor بعد ضبط المفتاح
-def import_fd():
+# تحميل fd_predictor كمورد (للاحتفاظ به في الذاكرة) + زر إعادة التحميل
+@st.cache_resource
+def load_fd():
+    # عند إعادة التحميل، نضمن حذف النسخة القديمة من sys.modules
     if "fd_predictor" in sys.modules:
         del sys.modules["fd_predictor"]
     return importlib.import_module("fd_predictor")
@@ -108,6 +116,16 @@ with st.expander("إعداد مفتاح API (Football-Data.org)", expanded=True)
                 st.warning("لم يتم إدخال مفتاح.")
     st.caption("تلميح: على Streamlit Cloud استخدم Settings → Secrets لحفظ المفتاح بأمان. لا تضعه في الكود أو الريبو.")
 
+    # زر إعادة تحميل المحرك لقراءة المتغيرات/المفتاح مجددًا
+    if st.button("إعادة تحميل المحرك / قراءة المفتاح من جديد"):
+        try:
+            load_fd.clear()
+            if "fd_predictor" in sys.modules:
+                del sys.modules["fd_predictor"]
+            st.success("سيُعاد تحميل fd_predictor في أول استدعاء.")
+        except Exception as e:
+            st.warning(f"تعذّر مسح الكاش: {e}")
+
 # -------------------------------------------------------------------
 # اختيار من البطولات والمباريات (جلب من API وتعبئة تلقائية)
 # -------------------------------------------------------------------
@@ -135,7 +153,7 @@ def _fmt_local(utc_iso: str) -> str:
     except Exception:
         return utc_iso
 
-@st.cache_data(ttl=90)
+@st.cache_data(ttl=90, show_spinner=False)
 def fetch_matches_api(comp_code: str, date_from: datetime.date, date_to: datetime.date, status: str = "SCHEDULED"):
     token = os.environ.get("FOOTBALL_DATA_API_KEY")
     if not token:
@@ -147,28 +165,43 @@ def fetch_matches_api(comp_code: str, date_from: datetime.date, date_to: datetim
         "dateTo": date_to.strftime("%Y-%m-%d"),
         "status": status  # SCHEDULED, TIMED, LIVE, IN_PLAY, FINISHED
     }
-    headers = {"X-Auth-Token": token}
-    r = requests.get(base, headers=headers, params=params, timeout=20)
-    if r.status_code != 200:
-        try:
-            msg = r.json()
-        except Exception:
-            msg = r.text
-        raise RuntimeError(f"API {r.status_code}: {msg}")
-    data = r.json() or {}
-    matches = []
-    for m in data.get("matches", []):
-        matches.append({
-            "id": m.get("id"),
-            "utcDate": m.get("utcDate"),
-            "competition": (m.get("competition") or {}).get("code") or comp_code,
-            "matchday": m.get("matchday"),
-            "status": m.get("status"),
-            "home": (m.get("homeTeam") or {}).get("name"),
-            "away": (m.get("awayTeam") or {}).get("name"),
-        })
-    matches.sort(key=lambda x: (x.get("utcDate") or "", x.get("home") or ""))
-    return matches
+    headers = {"X-Auth-Token": token, "User-Agent": "FD-Mobile/1.0 (+https://football-data.org)"}
+
+    tries = 5
+    for attempt in range(tries):
+        r = requests.get(base, headers=headers, params=params, timeout=20)
+        if r.status_code == 429:
+            ra = r.headers.get("Retry-After")
+            wait = int(ra) if ra and str(ra).isdigit() else max(2, 2 ** attempt)
+            st.info(f"Rate limit 429 — الانتظار {wait}s ثم إعادة المحاولة...")
+            import time; time.sleep(wait)
+            continue
+        if r.status_code != 200:
+            # إعادة المحاولة على أخطاء الشبكة المؤقتة
+            if attempt < tries - 1 and r.status_code in (500, 502, 503, 504):
+                import time; time.sleep(1.2 * (attempt + 1))
+                continue
+            try:
+                msg = r.json()
+            except Exception:
+                msg = r.text
+            raise RuntimeError(f"API {r.status_code}: {msg}")
+
+        data = r.json() or {}
+        matches = []
+        for m in data.get("matches", []):
+            matches.append({
+                "id": m.get("id"),
+                "utcDate": m.get("utcDate"),
+                "competition": (m.get("competition") or {}).get("code") or comp_code,
+                "matchday": m.get("matchday"),
+                "status": m.get("status"),
+                "home": (m.get("homeTeam") or {}).get("name"),
+                "away": (m.get("awayTeam") or {}).get("name"),
+            })
+        matches.sort(key=lambda x: (x.get("utcDate") or "", x.get("home") or ""))
+        return matches
+    return []
 
 # واجهة اختيار البطولات والمباريات
 st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -288,17 +321,21 @@ with st.form("predict_form"):
         team2 = st.text_input("الفريق 2", key="team2", disabled=disabled_fields)
         max_goals = st.text_input("حجم شبكة الأهداف (فارغ = ديناميكي)", key="max_goals")
 
+    # وضع المخرجات الكاملة + خيارات عرض الإثراءات
     with st.expander("خيارات عرض البيانات الإضافية"):
+        full_mode = st.checkbox("وضع المخرجات الكاملة (يفعّل كل الإضافات)", value=True, key="full_mode")
+
         cc1, cc2, cc3, cc4 = st.columns(4)
-        with cc1: show_players = st.checkbox("إظهار السكواد", value=False)
-        with cc2: show_recent = st.checkbox("إظهار آخر المباريات", value=True)
-        with cc3: show_scorers = st.checkbox("إظهار هدّافي المسابقة", value=False)
-        with cc4: show_upcoming = st.checkbox("إظهار المباريات القادمة", value=False)
+        with cc1: show_players = st.checkbox("إظهار السكواد", value=full_mode, key="show_players")
+        with cc2: show_recent = st.checkbox("إظهار آخر المباريات", value=full_mode, key="show_recent")
+        with cc3: show_scorers = st.checkbox("إظهار هدّافي المسابقة", value=full_mode, key="show_scorers")
+        with cc4: show_upcoming = st.checkbox("إظهار المباريات القادمة", value=full_mode, key="show_upcoming")
+
         rr1, rr2, rr3, rr4 = st.columns(4)
-        with rr1: recent_days = st.number_input("عدد الأيام للمباريات الأخيرة", min_value=30, max_value=720, value=180)
-        with rr2: recent_limit = st.number_input("عدد المباريات الأخيرة", min_value=1, max_value=20, value=5)
-        with rr3: recent_all_comps = st.checkbox("من كل المسابقات", value=False)
-        with rr4: scorers_limit = st.number_input("عدد الهدّافين", min_value=5, max_value=100, value=20)
+        with rr1: recent_days = st.number_input("عدد الأيام للمباريات الأخيرة", min_value=30, max_value=720, value=180, key="recent_days")
+        with rr2: recent_limit = st.number_input("عدد المباريات الأخيرة", min_value=1, max_value=20, value=5, key="recent_limit")
+        with rr3: recent_all_comps = st.checkbox("من كل المسابقات", value=False, key="recent_all_comps")
+        with rr4: scorers_limit = st.number_input("عدد الهدّافين", min_value=5, max_value=100, value=20, key="scorers_limit")
 
     with st.expander("إعدادات متقدمة"):
         odds_json = st.text_area("أودز (JSON) لحساب كيللي", height=90, placeholder='{"1x2":{"home":2.1,"draw":3.4,"away":3.2}}')
@@ -316,7 +353,7 @@ if submitted:
         st.error("يجب ضبط FOOTBALL_DATA_API_KEY قبل التوقّع (Secrets أو الحقل أعلاه).")
         st.stop()
     try:
-        fd = import_fd()
+        fd = load_fd()
     except Exception as e:
         st.exception(e)
         st.stop()
@@ -430,6 +467,7 @@ if submitted:
         st.write(kelly)
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # عرض الإخراج الكامل (JSON) + زر تنزيل + نسخ + محرر ACE (لو متوفر)
     with st.expander("الإخراج الكامل (JSON)"):
         # عرض الشجرة الافتراضي
         st.json(res)
@@ -479,3 +517,26 @@ if submitted:
           });
         </script>
         """ % b64, height=60)
+
+    # محرر ACE لعرض Raw JSON قابل للبحث (إن كان متاحاً)
+    with st.expander("الإخراج الكامل (Raw JSON) — قابل للبحث"):
+        try:
+            json_str = json.dumps(res, ensure_ascii=False, indent=2)
+        except Exception:
+            json_str = json.dumps(res, default=str, ensure_ascii=False, indent=2)
+
+        if st_ace is not None:
+            st_ace(
+                value=json_str,
+                language="json",
+                theme=("twilight" if st.session_state.ui_theme=="داكن" else "tomorrow"),
+                height=420,
+                key="ace_json",
+                readonly=True,
+                wrap=True,
+                auto_update=True,
+                show_gutter=True
+            )
+        else:
+            st.info("لتفعيل العارض المتقدّم، ثبّت الحزمة: pip install streamlit-ace")
+            st.text_area("Raw JSON", value=json_str, height=420)
